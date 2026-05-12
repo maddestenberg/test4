@@ -1,7 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
 using System.Diagnostics;
-using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Xml.Serialization;
 using ProtoBuf;
@@ -10,7 +10,7 @@ using test4.Models;
 namespace test4.Benchmarks;
 
 [MemoryDiagnoser]
-[SimpleJob(iterationCount: 30)]
+[SimpleJob(launchCount: 1, warmupCount: 3, iterationCount: 30)]
 public class SerializationBenchmarks
 {
     private List<FerryAnnouncement> _data = new();
@@ -38,31 +38,92 @@ public class SerializationBenchmarks
             .ToList()
             ?? new List<FerryAnnouncement>();
 
-        Console.WriteLine($"Loaded objects: {_data.Count}");
-
-        // JSON
         _jsonBytes = JsonSerializer.SerializeToUtf8Bytes(_data);
 
-        // XML
         var xmlSerializer = new XmlSerializer(typeof(List<FerryAnnouncement>));
-
         using (var ms = new MemoryStream())
         {
             xmlSerializer.Serialize(ms, _data);
             _xmlBytes = ms.ToArray();
         }
 
-        // Protobuf
         using (var ms = new MemoryStream())
         {
             Serializer.Serialize(ms, _data);
             _protobufBytes = ms.ToArray();
         }
 
+        int objectCount = _data.Count;
+
+        Console.WriteLine();
+        Console.WriteLine("=== OBJECT COUNT ===");
+        Console.WriteLine($"Loaded objects: {objectCount:N0}");
+
+        Console.WriteLine();
         Console.WriteLine("=== PAYLOAD SIZE ===");
         Console.WriteLine($"JSON: {_jsonBytes.Length:N0} bytes");
         Console.WriteLine($"XML: {_xmlBytes.Length:N0} bytes");
         Console.WriteLine($"PROTOBUF: {_protobufBytes.Length:N0} bytes");
+
+        var csvLines = new List<string>
+        {
+            "Method,Iteration,ElapsedTimeMs,CpuTimeMs,PayloadBytes,ObjectCount"
+        };
+
+        Console.WriteLine();
+        Console.WriteLine("=== RAW 30 ITERATIONS ===");
+
+        MeasureRaw30("Json_Serialize", Json_Serialize, _jsonBytes.Length, objectCount, csvLines);
+        MeasureRaw30("Xml_Serialize", Xml_Serialize, _xmlBytes.Length, objectCount, csvLines);
+        MeasureRaw30("Protobuf_Serialize", Protobuf_Serialize, _protobufBytes.Length, objectCount, csvLines);
+
+        MeasureRaw30("Json_Deserialize", Json_Deserialize, _jsonBytes.Length, objectCount, csvLines);
+        MeasureRaw30("Xml_Deserialize", Xml_Deserialize, _xmlBytes.Length, objectCount, csvLines);
+        MeasureRaw30("Protobuf_Deserialize", Protobuf_Deserialize, _protobufBytes.Length, objectCount, csvLines);
+
+        var resultPath = "/Users/mads/Desktop/SYSTEMVET/T6 SYSTEMVET/examensarbete/test4/Results/raw-iterations.csv";
+
+        Directory.CreateDirectory(Path.GetDirectoryName(resultPath)!);
+        File.WriteAllLines(resultPath, csvLines);
+
+        Console.WriteLine($"Saved CSV to: {resultPath}");
+    }
+
+    private static void MeasureRaw30(
+        string methodName,
+        Func<object?> action,
+        int payloadBytes,
+        int objectCount,
+        List<string> csvLines)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"--- {methodName} ---");
+
+        for (int i = 1; i <= 30; i++)
+        {
+            var process = Process.GetCurrentProcess();
+
+            var cpuBefore = process.TotalProcessorTime;
+            var stopwatch = Stopwatch.StartNew();
+
+            var result = action();
+
+            stopwatch.Stop();
+            var cpuAfter = process.TotalProcessorTime;
+
+            GC.KeepAlive(result);
+
+            double elapsedMs = stopwatch.Elapsed.TotalMilliseconds;
+            double cpuMs = (cpuAfter - cpuBefore).TotalMilliseconds;
+
+            Console.WriteLine(
+                $"Iteration {i}: elapsed={elapsedMs.ToString("F6", CultureInfo.InvariantCulture)} ms, cpu={cpuMs.ToString("F6", CultureInfo.InvariantCulture)} ms"
+            );
+
+            csvLines.Add(
+                $"{methodName},{i},{elapsedMs.ToString("F6", CultureInfo.InvariantCulture)},{cpuMs.ToString("F6", CultureInfo.InvariantCulture)},{payloadBytes},{objectCount}"
+            );
+        }
     }
 
     [Benchmark]
