@@ -8,7 +8,7 @@ using test4.Models;
 namespace test4.Benchmarks;
 
 [MemoryDiagnoser]
-[SimpleJob(launchCount: 2, warmupCount: 3, iterationCount: 30)]
+[SimpleJob(launchCount: 1, warmupCount: 3, iterationCount: 30)]
 public class SerializationBenchmarks
 {
     private List<FerryAnnouncement> _data = new();
@@ -20,10 +20,6 @@ public class SerializationBenchmarks
     private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly XmlSerializer _xmlSerializer = new(typeof(List<FerryAnnouncement>));
 
-    private int _jsonCapacity;
-    private int _xmlCapacity;
-    private int _protobufCapacity;
-
     [GlobalSetup]
     public void Setup()
     {
@@ -32,10 +28,6 @@ public class SerializationBenchmarks
         _protobufBytes = File.ReadAllBytes("data/data4.pb");
 
         _data = JsonSerializer.Deserialize<List<FerryAnnouncement>>(_jsonBytes)!;
-
-        _jsonCapacity = _jsonBytes.Length;
-        _xmlCapacity = _xmlBytes.Length;
-        _protobufCapacity = _protobufBytes.Length;
 
         int objectCount = _data.Count;
 
@@ -131,8 +123,8 @@ public class SerializationBenchmarks
     [Benchmark]
     public byte[] Json_Serialize()
     {
-        using var ms = new MemoryStream(_jsonCapacity);
-        JsonSerializer.Serialize(ms, _data);
+        using var ms = new MemoryStream();
+        JsonSerializer.Serialize(ms, _data, _jsonOptions);
         return ms.ToArray();
     }
 
@@ -140,13 +132,13 @@ public class SerializationBenchmarks
     public List<FerryAnnouncement>? Json_Deserialize()
     {
         using var ms = new MemoryStream(_jsonBytes);
-        return JsonSerializer.Deserialize<List<FerryAnnouncement>>(ms);
+        return JsonSerializer.Deserialize<List<FerryAnnouncement>>(ms, _jsonOptions);
     }
 
     [Benchmark]
     public byte[] Xml_Serialize()
     {
-        using var ms = new MemoryStream(_xmlCapacity);
+        using var ms = new MemoryStream();
         _xmlSerializer.Serialize(ms, _data);
         return ms.ToArray();
     }
@@ -161,7 +153,7 @@ public class SerializationBenchmarks
     [Benchmark]
     public byte[] Protobuf_Serialize()
     {
-        using var ms = new MemoryStream(_protobufCapacity);
+        using var ms = new MemoryStream();
         Serializer.Serialize(ms, _data);
         return ms.ToArray();
     }

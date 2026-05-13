@@ -20,14 +20,6 @@ public class JsonResult
 }
 
 [ProtoContract]
-[XmlRoot("Root")]
-public class Root
-{
-    [ProtoMember(1)]
-    public List<FerryAnnouncement> FerryAnnouncement { get; set; } = new();
-}
-
-[ProtoContract]
 public class FerryAnnouncement
 {
     [ProtoMember(1)]
