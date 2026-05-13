@@ -1,7 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
-using System.Diagnostics;
-using System.Globalization;
 using System.Text.Json;
 using System.Xml.Serialization;
 using ProtoBuf;
@@ -10,7 +8,7 @@ using test4.Models;
 namespace test4.Benchmarks;
 
 [MemoryDiagnoser]
-[SimpleJob(launchCount: 1, warmupCount: 3, iterationCount: 30)]
+[SimpleJob(launchCount: 2, warmupCount: 3, iterationCount: 30)]
 public class SerializationBenchmarks
 {
     private List<FerryAnnouncement> _data = new();
@@ -19,154 +17,152 @@ public class SerializationBenchmarks
     private byte[] _xmlBytes = Array.Empty<byte>();
     private byte[] _protobufBytes = Array.Empty<byte>();
 
-    private readonly JsonSerializerOptions _jsonOptions =
-        new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
+    private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private readonly XmlSerializer _xmlSerializer = new(typeof(List<FerryAnnouncement>));
+
+    private int _jsonCapacity;
+    private int _xmlCapacity;
+    private int _protobufCapacity;
 
     [GlobalSetup]
     public void Setup()
     {
-        string json = File.ReadAllText("Data/data4.json");
+        _jsonBytes     = File.ReadAllBytes("data/data4.json");
+        _xmlBytes      = File.ReadAllBytes("data/data4.xml");
+        _protobufBytes = File.ReadAllBytes("data/data4.pb");
 
-        var root = JsonSerializer.Deserialize<JsonRoot>(json, _jsonOptions);
+        _data = JsonSerializer.Deserialize<List<FerryAnnouncement>>(_jsonBytes)!;
 
-        _data = root?.RESPONSE?.RESULT?
-            .SelectMany(r => r.FerryAnnouncement)
-            .Take(2000)
-            .ToList()
-            ?? new List<FerryAnnouncement>();
-
-        _jsonBytes = JsonSerializer.SerializeToUtf8Bytes(_data);
-
-        var xmlSerializer = new XmlSerializer(typeof(List<FerryAnnouncement>));
-        using (var ms = new MemoryStream())
-        {
-            xmlSerializer.Serialize(ms, _data);
-            _xmlBytes = ms.ToArray();
-        }
-
-        using (var ms = new MemoryStream())
-        {
-            Serializer.Serialize(ms, _data);
-            _protobufBytes = ms.ToArray();
-        }
+        _jsonCapacity = _jsonBytes.Length;
+        _xmlCapacity = _xmlBytes.Length;
+        _protobufCapacity = _protobufBytes.Length;
 
         int objectCount = _data.Count;
 
-        Console.WriteLine();
-        Console.WriteLine("=== OBJECT COUNT ===");
-        Console.WriteLine($"Loaded objects: {objectCount:N0}");
+        List<FerryAnnouncement> jsonRt;
+        using (var ms = new MemoryStream(_jsonBytes))
+            jsonRt = JsonSerializer.Deserialize<List<FerryAnnouncement>>(ms, _jsonOptions)!;
+        AssertEquivalent(_data, jsonRt, "JSON");
+
+        List<FerryAnnouncement> xmlRt;
+        using (var ms = new MemoryStream(_xmlBytes))
+            xmlRt = (_xmlSerializer.Deserialize(ms) as List<FerryAnnouncement>)!;
+        AssertEquivalent(_data, xmlRt, "XML");
+
+        List<FerryAnnouncement> protoRt;
+        using (var ms = new MemoryStream(_protobufBytes))
+            protoRt = Serializer.Deserialize<List<FerryAnnouncement>>(ms);
+        AssertEquivalent(_data, protoRt, "Protobuf");
 
         Console.WriteLine();
-        Console.WriteLine("=== PAYLOAD SIZE ===");
-        Console.WriteLine($"JSON: {_jsonBytes.Length:N0} bytes");
-        Console.WriteLine($"XML: {_xmlBytes.Length:N0} bytes");
-        Console.WriteLine($"PROTOBUF: {_protobufBytes.Length:N0} bytes");
+        Console.WriteLine("=== ROUND-TRIP VALIDATION ===");
+        Console.WriteLine($"All three formats passed round-trip validation ({objectCount:N0} objects, all fields).");
+        Console.WriteLine();
+        Console.WriteLine($"Objects: {objectCount:N0}  |  JSON: {_jsonBytes.Length:N0} B  |  XML: {_xmlBytes.Length:N0} B  |  Protobuf: {_protobufBytes.Length:N0} B");
 
-        var csvLines = new List<string>
+        var resultsDir = Environment.GetEnvironmentVariable("BENCH_RESULTS_DIR");
+        if (resultsDir != null)
         {
-            "Method,Iteration,ElapsedTimeMs,CpuTimeMs,PayloadBytes,ObjectCount"
-        };
-
-        Console.WriteLine();
-        Console.WriteLine("=== RAW 30 ITERATIONS ===");
-
-        MeasureRaw30("Json_Serialize", Json_Serialize, _jsonBytes.Length, objectCount, csvLines);
-        MeasureRaw30("Xml_Serialize", Xml_Serialize, _xmlBytes.Length, objectCount, csvLines);
-        MeasureRaw30("Protobuf_Serialize", Protobuf_Serialize, _protobufBytes.Length, objectCount, csvLines);
-
-        MeasureRaw30("Json_Deserialize", Json_Deserialize, _jsonBytes.Length, objectCount, csvLines);
-        MeasureRaw30("Xml_Deserialize", Xml_Deserialize, _xmlBytes.Length, objectCount, csvLines);
-        MeasureRaw30("Protobuf_Deserialize", Protobuf_Deserialize, _protobufBytes.Length, objectCount, csvLines);
-
-        var resultPath = "/Users/mads/Desktop/SYSTEMVET/T6 SYSTEMVET/examensarbete/test4/Results/raw-iterations.csv";
-
-        Directory.CreateDirectory(Path.GetDirectoryName(resultPath)!);
-        File.WriteAllLines(resultPath, csvLines);
-
-        Console.WriteLine($"Saved CSV to: {resultPath}");
+            Directory.CreateDirectory(resultsDir);
+            File.WriteAllText(
+                Path.Combine(resultsDir, "payload-info.json"),
+                JsonSerializer.Serialize(new Dictionary<string, int>
+                {
+                    ["JsonBytes"]     = _jsonBytes.Length,
+                    ["XmlBytes"]      = _xmlBytes.Length,
+                    ["ProtobufBytes"] = _protobufBytes.Length,
+                    ["ObjectCount"]   = objectCount
+                }));
+        }
     }
 
-    private static void MeasureRaw30(
-        string methodName,
-        Func<object?> action,
-        int payloadBytes,
-        int objectCount,
-        List<string> csvLines)
+    private static void AssertEquivalent(List<FerryAnnouncement> original, List<FerryAnnouncement> deserialized, string formatName)
     {
-        Console.WriteLine();
-        Console.WriteLine($"--- {methodName} ---");
+        if (original.Count != deserialized.Count)
+            throw new InvalidOperationException($"{formatName} round-trip count mismatch: expected={original.Count}, actual={deserialized.Count}.");
+        for (int i = 0; i < original.Count; i++)
+            AssertEquivalent(original[i], deserialized[i], formatName, i);
+    }
 
-        for (int i = 1; i <= 30; i++)
-        {
-            var process = Process.GetCurrentProcess();
+    private static void AssertEquivalent(FerryAnnouncement expected, FerryAnnouncement actual, string formatName, int index)
+    {
+        void Fail(string field, object? exp, object? act) =>
+            throw new InvalidOperationException($"{formatName} round-trip mismatch at index {index}, field '{field}': expected='{exp}', actual='{act}'.");
 
-            var cpuBefore = process.TotalProcessorTime;
-            var stopwatch = Stopwatch.StartNew();
+        if (expected.Deleted != actual.Deleted) Fail(nameof(FerryAnnouncement.Deleted), expected.Deleted, actual.Deleted);
+        if (expected.DepartureTime != actual.DepartureTime) Fail(nameof(FerryAnnouncement.DepartureTime), expected.DepartureTime, actual.DepartureTime);
+        if (expected.DeviationId != actual.DeviationId) Fail(nameof(FerryAnnouncement.DeviationId), expected.DeviationId, actual.DeviationId);
+        if (expected.Id != actual.Id) Fail(nameof(FerryAnnouncement.Id), expected.Id, actual.Id);
+        AssertEquivalent(expected.FromHarbor, actual.FromHarbor, formatName, index, nameof(FerryAnnouncement.FromHarbor));
+        AssertEquivalent(expected.ToHarbor, actual.ToHarbor, formatName, index, nameof(FerryAnnouncement.ToHarbor));
+        AssertEquivalent(expected.Route, actual.Route, formatName, index, nameof(FerryAnnouncement.Route));
+        if (expected.ModifiedTime != actual.ModifiedTime) Fail(nameof(FerryAnnouncement.ModifiedTime), expected.ModifiedTime, actual.ModifiedTime);
+    }
 
-            var result = action();
+    private static void AssertEquivalent(Harbor expected, Harbor actual, string formatName, int index, string parentField)
+    {
+        void Fail(string field, object? exp, object? act) =>
+            throw new InvalidOperationException($"{formatName} round-trip mismatch at index {index}, field '{parentField}.{field}': expected='{exp}', actual='{act}'.");
 
-            stopwatch.Stop();
-            var cpuAfter = process.TotalProcessorTime;
+        if (expected.Id != actual.Id) Fail(nameof(Harbor.Id), expected.Id, actual.Id);
+        if (expected.Name != actual.Name) Fail(nameof(Harbor.Name), expected.Name, actual.Name);
+    }
 
-            GC.KeepAlive(result);
+    private static void AssertEquivalent(Route expected, Route actual, string formatName, int index, string parentField)
+    {
+        void Fail(string field, object? exp, object? act) =>
+            throw new InvalidOperationException($"{formatName} round-trip mismatch at index {index}, field '{parentField}.{field}': expected='{exp}', actual='{act}'.");
 
-            double elapsedMs = stopwatch.Elapsed.TotalMilliseconds;
-            double cpuMs = (cpuAfter - cpuBefore).TotalMilliseconds;
+        if (expected.Id != actual.Id) Fail(nameof(Route.Id), expected.Id, actual.Id);
+        if (expected.Name != actual.Name) Fail(nameof(Route.Name), expected.Name, actual.Name);
+        if (expected.Shortname != actual.Shortname) Fail(nameof(Route.Shortname), expected.Shortname, actual.Shortname);
+        AssertEquivalent(expected.Type, actual.Type, formatName, index, nameof(Route.Type));
+    }
 
-            Console.WriteLine(
-                $"Iteration {i}: elapsed={elapsedMs.ToString("F6", CultureInfo.InvariantCulture)} ms, cpu={cpuMs.ToString("F6", CultureInfo.InvariantCulture)} ms"
-            );
+    private static void AssertEquivalent(RouteType expected, RouteType actual, string formatName, int index, string parentField)
+    {
+        void Fail(string field, object? exp, object? act) =>
+            throw new InvalidOperationException($"{formatName} round-trip mismatch at index {index}, field '{parentField}.{field}': expected='{exp}', actual='{act}'.");
 
-            csvLines.Add(
-                $"{methodName},{i},{elapsedMs.ToString("F6", CultureInfo.InvariantCulture)},{cpuMs.ToString("F6", CultureInfo.InvariantCulture)},{payloadBytes},{objectCount}"
-            );
-        }
+        if (expected.Id != actual.Id) Fail(nameof(RouteType.Id), expected.Id, actual.Id);
+        if (expected.Name != actual.Name) Fail(nameof(RouteType.Name), expected.Name, actual.Name);
     }
 
     [Benchmark]
     public byte[] Json_Serialize()
     {
-        return JsonSerializer.SerializeToUtf8Bytes(_data);
+        using var ms = new MemoryStream(_jsonCapacity);
+        JsonSerializer.Serialize(ms, _data);
+        return ms.ToArray();
     }
 
     [Benchmark]
     public List<FerryAnnouncement>? Json_Deserialize()
     {
-        return JsonSerializer.Deserialize<List<FerryAnnouncement>>(_jsonBytes);
+        using var ms = new MemoryStream(_jsonBytes);
+        return JsonSerializer.Deserialize<List<FerryAnnouncement>>(ms);
     }
 
     [Benchmark]
     public byte[] Xml_Serialize()
     {
-        var serializer = new XmlSerializer(typeof(List<FerryAnnouncement>));
-
-        using var ms = new MemoryStream();
-
-        serializer.Serialize(ms, _data);
-
+        using var ms = new MemoryStream(_xmlCapacity);
+        _xmlSerializer.Serialize(ms, _data);
         return ms.ToArray();
     }
 
     [Benchmark]
     public List<FerryAnnouncement>? Xml_Deserialize()
     {
-        var serializer = new XmlSerializer(typeof(List<FerryAnnouncement>));
-
         using var ms = new MemoryStream(_xmlBytes);
-
-        return serializer.Deserialize(ms) as List<FerryAnnouncement>;
+        return _xmlSerializer.Deserialize(ms) as List<FerryAnnouncement>;
     }
 
     [Benchmark]
     public byte[] Protobuf_Serialize()
     {
-        using var ms = new MemoryStream();
-
+        using var ms = new MemoryStream(_protobufCapacity);
         Serializer.Serialize(ms, _data);
-
         return ms.ToArray();
     }
 
@@ -174,7 +170,6 @@ public class SerializationBenchmarks
     public List<FerryAnnouncement> Protobuf_Deserialize()
     {
         using var ms = new MemoryStream(_protobufBytes);
-
         return Serializer.Deserialize<List<FerryAnnouncement>>(ms);
     }
 }

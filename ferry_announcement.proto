@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+// Rotnivå – protobuf-net serialiserar List<FerryAnnouncement> som ett
+// repeated-fält med nummer 1, vilket motsvarar den här wrappern.
+message FerryAnnouncementList {
+    repeated FerryAnnouncement FerryAnnouncement = 1;
+}
+
+message FerryAnnouncement {
+    bool   Deleted       = 1;
+    string DepartureTime = 2;
+    string DeviationId   = 3;
+    int64  Id            = 4;
+    Harbor FromHarbor    = 5;
+    Harbor ToHarbor      = 6;
+    Route  Route         = 7;
+    string ModifiedTime  = 8;
+}
+
+message Harbor {
+    int32  Id   = 1;
+    string Name = 2;
+}
+
+message Route {
+    int32     Id        = 1;
+    string    Name      = 2;
+    string    Shortname = 3;
+    RouteType Type      = 4;
+}
+
+message RouteType {
+    int32  Id   = 1;
+    string Name = 2;
+}
